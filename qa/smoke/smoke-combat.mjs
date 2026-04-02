@@ -21,8 +21,11 @@ try {
   const count = await cards.count();
   if (count < 1) throw new Error('No cards available to play');
 
+  // First click selects card (target preview), second click plays card.
   await cards.first().click();
-  await page.waitForTimeout(150);
+  await page.waitForTimeout(120);
+  await cards.first().click();
+  await page.waitForTimeout(180);
 
   const hpAfter = hpNum((await page.textContent('[data-testid="enemy-hp"]')) || '');
   const logAfter = await page.locator('[data-testid="combat-log"] div').count();

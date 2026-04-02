@@ -1,5 +1,7 @@
-import { cards, items, type Card } from "@sigil/content";
+import { cards, items, type Card, type StatusKind } from "@sigil/content";
 import { generateBastionMap } from "@sigil/world";
+
+export type StatusEffect = { kind: StatusKind; duration: number };
 
 export type Entity = {
   id: string;
@@ -8,9 +10,12 @@ export type Entity = {
   maxHp: number;
   x: number;
   y: number;
+  statuses: StatusEffect[];
 };
 
+export type EnemyArchetype = "skeleton" | "brute" | "acolyte";
 export type RankMutation = "battlemage" | "spellblade" | null;
+export type RewardChoice = "vigor" | "focus" | "armament";
 
 export type Progression = {
   xp: number;
@@ -21,9 +26,19 @@ export type Progression = {
   rankMutation: RankMutation;
 };
 
+export type PendingFloor = {
+  floor: number;
+  seed: number;
+  map: ReturnType<typeof generateBastionMap>;
+  chest: { x: number; y: number };
+  enemy: Entity;
+  killTarget: number;
+  clearedBy: "kills" | "chest";
+};
+
 export type GameState = {
   turn: number;
-  phase: "hero" | "enemy";
+  phase: "hero" | "enemy" | "reward" | "gameover";
   ap: { current: number; max: number };
   map: ReturnType<typeof generateBastionMap>;
   hero: Entity;
@@ -37,6 +52,9 @@ export type GameState = {
   hand: Card[];
   discard: Card[];
   progression: Progression;
+  rewardOptions: RewardChoice[];
+  pendingFloor: PendingFloor | null;
+  runSummary: null | { floorsCleared: number; kills: number; level: number; rank: number; mutation: RankMutation };
   log: string[];
 };
 
@@ -74,6 +92,30 @@ function canRankUp(p: Progression): boolean {
   return p.rank === 1 && p.level >= 3 && p.kills >= 2;
 }
 
+function upsertStatus(statuses: StatusEffect[], next: StatusEffect): StatusEffect[] {
+  const existing = statuses.find((s) => s.kind === next.kind);
+  if (!existing) return [...statuses, next];
+  return statuses.map((s) => (s.kind === next.kind ? { ...s, duration: Math.max(s.duration, next.duration) } : s));
+}
+
+function hasStatus(entity: Entity, kind: StatusKind): boolean {
+  return entity.statuses.some((s) => s.kind === kind && s.duration > 0);
+}
+
+function tickStatuses(entity: Entity): Entity {
+  let next = { ...entity };
+
+  if (hasStatus(next, "bleed")) {
+    next.hp = Math.max(0, next.hp - 1);
+  }
+
+  next.statuses = next.statuses
+    .map((s) => ({ ...s, duration: s.duration - 1 }))
+    .filter((s) => s.duration > 0);
+
+  return next;
+}
+
 function grantXp(state: GameState, amount: number): GameState {
   let next: GameState = {
     ...state,
@@ -106,10 +148,7 @@ function grantXp(state: GameState, amount: number): GameState {
         ...next.progression,
         rankChoicePending: true,
       },
-      log: [
-        ...next.log,
-        "Rank-up available! Choose a mutation: battlemage or spellblade.",
-      ],
+      log: [...next.log, "Rank-up available! Choose battlemage or spellblade."],
     };
   }
 
@@ -127,9 +166,11 @@ function consumeAp(state: GameState, amount = 1): GameState {
 }
 
 function canAct(state: GameState): boolean {
-  return (
-    state.phase === "hero" && !state.progression.rankChoicePending && state.ap.current > 0
-  );
+  return state.phase === "hero" && !state.progression.rankChoicePending && state.ap.current > 0;
+}
+
+function manhattan(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 }
 
 function isWalkable(state: GameState, x: number, y: number): boolean {
@@ -139,17 +180,11 @@ function isWalkable(state: GameState, x: number, y: number): boolean {
   return true;
 }
 
-function manhattan(a: { x: number; y: number }, b: { x: number; y: number }): number {
-  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-}
-
 function floorKillTargetFor(floor: number): number {
   return Math.min(6, 2 + floor);
 }
 
-function chooseChestTile(
-  map: ReturnType<typeof generateBastionMap>
-): { x: number; y: number } {
+function chooseChestTile(map: ReturnType<typeof generateBastionMap>): { x: number; y: number } {
   const floorTiles = map.tiles.filter((t) => t.kind === "floor");
   if (!floorTiles.length) return { ...map.heroSpawn };
 
@@ -159,11 +194,32 @@ function chooseChestTile(
     return db - da;
   });
 
-  const chosen = floorTiles.find(
-    (t) => !(t.x === map.heroSpawn.x && t.y === map.heroSpawn.y)
-  );
-
+  const chosen = floorTiles.find((t) => !(t.x === map.heroSpawn.x && t.y === map.heroSpawn.y));
   return chosen ? { x: chosen.x, y: chosen.y } : { ...map.heroSpawn };
+}
+
+function enemyArchetypeForFloor(floor: number): EnemyArchetype {
+  if (floor % 5 === 0) return "acolyte";
+  if (floor % 3 === 0) return "brute";
+  return "skeleton";
+}
+
+function spawnEnemyForFloor(
+  state: GameState,
+  floor: number,
+  map: ReturnType<typeof generateBastionMap>
+): Entity {
+  const arch = enemyArchetypeForFloor(floor);
+  if (arch === "brute") {
+    const hp = 16 + floor * 4;
+    return { ...state.enemy, name: "Bone Brute", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y, statuses: [] };
+  }
+  if (arch === "acolyte") {
+    const hp = 12 + floor * 3;
+    return { ...state.enemy, name: "Hex Acolyte", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y, statuses: [{ kind: "slow", duration: 1 }] };
+  }
+  const hp = 12 + floor * 3;
+  return { ...state.enemy, name: "Skeleton", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y, statuses: [] };
 }
 
 function floorClearByChest(state: GameState): boolean {
@@ -174,97 +230,128 @@ function floorClearByKills(state: GameState): boolean {
   return state.floorKills >= state.floorKillTarget;
 }
 
-function healHeroBetweenFloors(hero: Entity): Entity {
-  const heal = Math.max(2, Math.floor(hero.maxHp * 0.3));
-  return { ...hero, hp: Math.min(hero.maxHp, hero.hp + heal) };
-}
-
-function spawnEnemyForFloor(
-  state: GameState,
-  floor: number,
-  map: ReturnType<typeof generateBastionMap>
-): Entity {
-  const hp = 12 + floor * 3;
+function buildPendingFloor(state: GameState, clearedBy: "kills" | "chest"): PendingFloor {
+  const floor = state.floor + 1;
+  const seed = state.floorSeed + 1;
+  const map = generateBastionMap(seed);
   return {
-    ...state.enemy,
-    hp,
-    maxHp: hp,
-    x: map.enemySpawn.x,
-    y: map.enemySpawn.y,
+    floor,
+    seed,
+    map,
+    chest: chooseChestTile(map),
+    enemy: spawnEnemyForFloor(state, floor, map),
+    killTarget: floorKillTargetFor(floor),
+    clearedBy,
   };
 }
 
-function advanceFloor(state: GameState, reason: "kills" | "chest"): GameState {
-  const nextFloor = state.floor + 1;
-  const nextSeed = state.floorSeed + 1;
-  const nextMap = generateBastionMap(nextSeed);
-  const nextChest = chooseChestTile(nextMap);
-  const nextMaxAp = BASE_AP + (state.progression.rankMutation === "spellblade" ? 1 : 0);
-  const bonusDraw = state.progression.rankMutation === "battlemage" ? 1 : 0;
-
-  const transitioned: GameState = {
+function toRewardPhase(state: GameState, reason: "kills" | "chest"): GameState {
+  const pending = buildPendingFloor(state, reason);
+  return {
     ...state,
-    floor: nextFloor,
-    floorSeed: nextSeed,
-    floorKills: 0,
-    floorKillTarget: floorKillTargetFor(nextFloor),
-    turn: state.turn + 1,
-    phase: "hero",
-    ap: { max: nextMaxAp, current: nextMaxAp },
-    map: nextMap,
-    chest: nextChest,
-    hero: {
-      ...healHeroBetweenFloors({
-        ...state.hero,
-        x: nextMap.heroSpawn.x,
-        y: nextMap.heroSpawn.y,
-      }),
-    },
-    enemy: spawnEnemyForFloor(state, nextFloor, nextMap),
-    hand: [],
-    discard: [...state.discard, ...state.hand],
+    phase: "reward",
+    pendingFloor: pending,
+    rewardOptions: ["vigor", "focus", "armament"],
     log: [
       ...state.log,
       reason === "kills"
         ? `Floor ${state.floor} cleared by kills.`
         : `Floor ${state.floor} cleared by finding the chest.`,
-      `Descending to Floor ${nextFloor}...`,
-      `Turn ${state.turn + 1} started.`,
+      "Choose a reward before descending.",
     ],
+  };
+}
+
+function applyReward(state: GameState, choice: RewardChoice): GameState {
+  const pending = state.pendingFloor;
+  if (!pending) return state;
+
+  let next = { ...state };
+  if (choice === "vigor") {
+    next.hero = { ...next.hero, maxHp: next.hero.maxHp + 3, hp: Math.min(next.hero.maxHp + 3, next.hero.hp + 5) };
+    next.log = [...next.log, "Reward chosen: Vigor (+max HP, heal)."];
+  } else if (choice === "focus") {
+    next.ap = { max: next.ap.max + 1, current: next.ap.current + 1 };
+    next.log = [...next.log, "Reward chosen: Focus (+1 AP this and future turns)."];
+  } else {
+    next.deck = [...next.deck, cards.find((c) => c.id === "arc-bolt")!];
+    next.log = [...next.log, "Reward chosen: Armament (+Arc Bolt card)."];
+  }
+
+  const healed = Math.max(2, Math.floor(next.hero.maxHp * 0.3));
+  const bonusDraw = next.progression.rankMutation === "battlemage" ? 1 : 0;
+
+  const transitioned: GameState = {
+    ...next,
+    turn: next.turn + 1,
+    phase: "hero",
+    floor: pending.floor,
+    floorSeed: pending.seed,
+    floorKills: 0,
+    floorKillTarget: pending.killTarget,
+    map: pending.map,
+    chest: pending.chest,
+    hero: {
+      ...next.hero,
+      hp: Math.min(next.hero.maxHp, next.hero.hp + healed),
+      x: pending.map.heroSpawn.x,
+      y: pending.map.heroSpawn.y,
+    },
+    enemy: pending.enemy,
+    hand: [],
+    discard: [...next.discard, ...next.hand],
+    rewardOptions: [],
+    pendingFloor: null,
+    log: [...next.log, `Descending to Floor ${pending.floor}...`, `Turn ${next.turn + 1} started.`],
   };
 
   return drawCards(transitioned, 3 + bonusDraw);
 }
 
-function maybeAdvanceFloor(state: GameState): GameState {
-  if (floorClearByKills(state)) return advanceFloor(state, "kills");
-  if (floorClearByChest(state)) return advanceFloor(state, "chest");
-  return state;
+function checkGameOver(state: GameState): GameState {
+  if (state.hero.hp > 0) return state;
+  return {
+    ...state,
+    phase: "gameover",
+    runSummary: {
+      floorsCleared: state.floor - 1,
+      kills: state.progression.kills,
+      level: state.progression.level,
+      rank: state.progression.rank,
+      mutation: state.progression.rankMutation,
+    },
+    log: [...state.log, "You have fallen in Bastion."],
+  };
 }
 
 function enemyAct(state: GameState): GameState {
   let next: GameState = {
     ...state,
     phase: "enemy",
+    enemy: tickStatuses(state.enemy),
+    hero: tickStatuses(state.hero),
     log: [...state.log, "Enemy turn."],
   };
-  let enemyAp = BASE_AP;
+
+  next = checkGameOver(next);
+  if (next.phase === "gameover") return next;
+
+  let enemyAp = BASE_AP - (hasStatus(next.enemy, "slow") ? 1 : 0);
+  if (enemyAp < 1) enemyAp = 1;
 
   while (enemyAp > 0 && next.enemy.hp > 0 && next.hero.hp > 0) {
     const dist = manhattan(next.enemy, next.hero);
 
     if (dist <= 1) {
+      let dmg = ENEMY_ATTACK_DAMAGE;
+      if (hasStatus(next.hero, "guard")) dmg = Math.max(0, dmg - 1);
       next = {
         ...next,
-        hero: {
-          ...next.hero,
-          hp: Math.max(0, next.hero.hp - ENEMY_ATTACK_DAMAGE),
-        },
-        log: [
-          ...next.log,
-          `${next.enemy.name} attacks ${next.hero.name} for ${ENEMY_ATTACK_DAMAGE}.`,
-        ],
+        hero: { ...next.hero, hp: Math.max(0, next.hero.hp - dmg) },
+        log: [...next.log, `${next.enemy.name} attacks ${next.hero.name} for ${dmg}.`],
       };
+      next = checkGameOver(next);
+      if (next.phase === "gameover") return next;
       enemyAp -= 1;
       continue;
     }
@@ -281,17 +368,13 @@ function enemyAct(state: GameState): GameState {
       break;
     }
 
-    candidates.sort(
-      (a, b) => manhattan(a, next.hero) - manhattan(b, next.hero)
-    );
+    candidates.sort((a, b) => manhattan(a, next.hero) - manhattan(b, next.hero));
     const step = candidates[0];
-
     next = {
       ...next,
       enemy: { ...next.enemy, x: step.x, y: step.y },
       log: [...next.log, `${next.enemy.name} advances.`],
     };
-
     enemyAp -= 1;
   }
 
@@ -303,17 +386,20 @@ function enemyAct(state: GameState): GameState {
     turn: next.turn + 1,
     phase: "hero",
     ap: { max: nextMaxAp, current: nextMaxAp },
+    hero: tickStatuses(next.hero),
     hand: [],
     discard: [...next.discard, ...next.hand],
   };
 
-  return drawCards(
+  const drawn = drawCards(
     {
       ...withNextTurn,
       log: [...withNextTurn.log, `Turn ${withNextTurn.turn} started.`],
     },
     2 + bonusDraw
   );
+
+  return checkGameOver(drawn);
 }
 
 function respawnEnemy(state: GameState): GameState {
@@ -326,9 +412,28 @@ function respawnEnemy(state: GameState): GameState {
       maxHp: hp,
       x: state.map.enemySpawn.x,
       y: state.map.enemySpawn.y,
+      statuses: [],
     },
     log: [...state.log, `${state.enemy.name} reforms in the dungeon...`],
   };
+}
+
+export function canPlayCard(state: GameState, cardId: string): boolean {
+  const card = state.hand.find((c) => c.id === cardId);
+  if (!card || !canAct(state)) return false;
+  const dist = manhattan(state.hero, state.enemy);
+  if (card.value === 0 && !card.selfStatus) return true;
+  return dist <= card.range;
+}
+
+export function getCardRangeTiles(state: GameState, cardId: string): Array<{ x: number; y: number }> {
+  const card = state.hand.find((c) => c.id === cardId);
+  if (!card) return [];
+  const maxR = card.range;
+  return state.map.tiles
+    .filter((t) => t.kind !== "wall")
+    .filter((t) => manhattan({ x: t.x, y: t.y }, state.hero) <= maxR)
+    .map((t) => ({ x: t.x, y: t.y }));
 }
 
 export function createNewGame(seed = 1): GameState {
@@ -346,14 +451,8 @@ export function createNewGame(seed = 1): GameState {
     floorSeed: seed,
     floorKills: 0,
     floorKillTarget: floorKillTargetFor(1),
-    hero: { id: "hero", name: "Warden", hp: 20, maxHp: 20, ...map.heroSpawn },
-    enemy: {
-      id: "enemy",
-      name: "Skeleton",
-      hp: 14,
-      maxHp: 14,
-      ...map.enemySpawn,
-    },
+    hero: { id: "hero", name: "Warden", hp: 20, maxHp: 20, ...map.heroSpawn, statuses: [] },
+    enemy: { id: "enemy", name: "Skeleton", hp: 14, maxHp: 14, ...map.enemySpawn, statuses: [] },
     deck,
     hand: [],
     discard: [],
@@ -365,19 +464,16 @@ export function createNewGame(seed = 1): GameState {
       rankChoicePending: false,
       rankMutation: null,
     },
-    log: [
-      "Battle begins in Bastion.",
-      "Floor objective: defeat enemies or find the treasure chest.",
-    ],
+    rewardOptions: [],
+    pendingFloor: null,
+    runSummary: null,
+    log: ["Battle begins in Bastion.", "Floor objective: defeat enemies or find the treasure chest."],
   };
   return drawCards(initial, 3);
 }
 
-export function chooseRankMutation(
-  state: GameState,
-  mutation: Exclude<RankMutation, null>
-): GameState {
-  if (!state.progression.rankChoicePending) return state;
+export function chooseRankMutation(state: GameState, mutation: Exclude<RankMutation, null>): GameState {
+  if (!state.progression.rankChoicePending || state.phase === "gameover") return state;
 
   let next: GameState = {
     ...state,
@@ -411,13 +507,16 @@ export function chooseRankMutation(
   return next;
 }
 
+export function chooseReward(state: GameState, reward: RewardChoice): GameState {
+  if (state.phase !== "reward") return state;
+  if (!state.rewardOptions.includes(reward)) return state;
+  return applyReward(state, reward);
+}
+
 export function endTurn(state: GameState): GameState {
   if (state.phase !== "hero") return state;
   if (state.progression.rankChoicePending) {
-    return {
-      ...state,
-      log: [...state.log, "Choose a rank mutation before ending turn."],
-    };
+    return { ...state, log: [...state.log, "Choose a rank mutation before ending turn."] };
   }
   return enemyAct(state);
 }
@@ -427,12 +526,8 @@ export function moveHero(state: GameState, dx: number, dy: number): GameState {
 
   const nx = state.hero.x + dx;
   const ny = state.hero.y + dy;
-
   if (!isWalkable(state, nx, ny)) {
-    return {
-      ...state,
-      log: [...state.log, "Blocked."],
-    };
+    return { ...state, log: [...state.log, "Blocked."] };
   }
 
   const moved = consumeAp({
@@ -441,10 +536,7 @@ export function moveHero(state: GameState, dx: number, dy: number): GameState {
     log: [...state.log, `${state.hero.name} moves.`],
   });
 
-  if (floorClearByChest(moved)) {
-    return advanceFloor(moved, "chest");
-  }
-
+  if (floorClearByChest(moved)) return toRewardPhase(moved, "chest");
   return moved;
 }
 
@@ -463,41 +555,45 @@ export function playCard(state: GameState, cardId: string): GameState {
     discard: [...state.discard, card],
   };
 
+  if (card.selfStatus) {
+    next = {
+      ...next,
+      hero: { ...next.hero, statuses: upsertStatus(next.hero.statuses, card.selfStatus) },
+      log: [...next.log, `${next.hero.name} gains ${card.selfStatus.kind}.`],
+    };
+  }
+
   const dist = manhattan(next.hero, next.enemy);
   let line = `${card.name} fizzles.`;
 
   if (dist <= card.range && card.value > 0 && next.enemy.hp > 0) {
     const newEnemyHp = Math.max(0, next.enemy.hp - card.value);
-    next = {
-      ...next,
-      enemy: { ...next.enemy, hp: newEnemyHp },
-    };
+    next = { ...next, enemy: { ...next.enemy, hp: newEnemyHp } };
     line = `${next.hero.name} uses ${card.name} for ${card.value} damage.`;
+
+    if (card.applyStatus && newEnemyHp > 0) {
+      next = {
+        ...next,
+        enemy: { ...next.enemy, statuses: upsertStatus(next.enemy.statuses, card.applyStatus) },
+        log: [...next.log, `${next.enemy.name} suffers ${card.applyStatus.kind}.`],
+      };
+    }
 
     if (newEnemyHp === 0) {
       next = grantXp(
         {
           ...next,
           floorKills: next.floorKills + 1,
-          progression: {
-            ...next.progression,
-            kills: next.progression.kills + 1,
-          },
+          progression: { ...next.progression, kills: next.progression.kills + 1 },
           log: [...next.log, `${next.enemy.name} is defeated! (+5 XP)`],
         },
         5
       );
 
-      if (floorClearByKills(next)) {
-        return advanceFloor(consumeAp({ ...next, log: [...next.log, line] }), "kills");
-      }
-
+      if (floorClearByKills(next)) return toRewardPhase(consumeAp({ ...next, log: [...next.log, line] }), "kills");
       next = respawnEnemy(next);
     }
   }
 
-  return consumeAp({
-    ...next,
-    log: [...next.log, line],
-  });
+  return consumeAp({ ...next, log: [...next.log, line] });
 }
