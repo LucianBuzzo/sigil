@@ -1,0 +1,12 @@
+{
+  "name": "@sigil/core",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@sigil/content": "0.0.1"
+  },
+  "scripts": {
+    "typecheck": "echo ok"
+  }
+}

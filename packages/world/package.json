@@ -1,0 +1,13 @@
+{
+  "name": "@sigil/world",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "dungeoneer": "file:../../../dungeoneer"
+  },
+  "scripts": {
+    "typecheck": "echo ok",
+    "generate:maps": "node scripts/generate-maps.mjs"
+  }
+}
