@@ -1,5 +1,11 @@
 import React, { useMemo, useState } from "react";
-import { createNewGame, endTurn, moveHero, playCard } from "@sigil/core";
+import {
+  chooseRankMutation,
+  createNewGame,
+  endTurn,
+  moveHero,
+  playCard,
+} from "@sigil/core";
 
 const tileSize = 36;
 
@@ -20,7 +26,7 @@ export function App() {
       data-testid="app-root"
       style={{
         display: "grid",
-        gridTemplateColumns: "minmax(640px, 1fr) 340px",
+        gridTemplateColumns: "minmax(640px, 1fr) 360px",
         gap: 16,
         padding: 16,
         alignItems: "start",
@@ -44,6 +50,7 @@ export function App() {
               {row.map((kind, x) => {
                 const isHero = state.hero.x === x && state.hero.y === y;
                 const isEnemy = state.enemy.x === x && state.enemy.y === y && state.enemy.hp > 0;
+                const isChest = state.chest.x === x && state.chest.y === y;
                 return (
                   <div
                     key={`${x}-${y}`}
@@ -61,7 +68,7 @@ export function App() {
                       fontSize: 16,
                     }}
                   >
-                    {isHero ? "🧙" : isEnemy ? "💀" : ""}
+                    {isHero ? "🧙" : isEnemy ? "💀" : isChest ? "🧰" : ""}
                   </div>
                 );
               })}
@@ -105,10 +112,59 @@ export function App() {
       >
         <h3>Combat</h3>
         <p data-testid="turn">Turn: {state.turn}</p>
-        <p data-testid="hero-hp">Hero HP: {state.hero.hp}</p>
-        <p data-testid="enemy-hp">
-          Enemy HP: {state.enemy.hp} {won ? "(defeated)" : ""}
+        <p data-testid="floor">Floor: {state.floor}</p>
+        <p data-testid="phase">Phase: {state.phase}</p>
+        <p data-testid="ap">
+          AP: {state.ap.current}/{state.ap.max}
         </p>
+        <p data-testid="hero-hp">
+          Hero HP: {state.hero.hp}/{state.hero.maxHp}
+        </p>
+        <p data-testid="enemy-hp">
+          Enemy HP: {state.enemy.hp}/{state.enemy.maxHp} {won ? "(defeated)" : ""}
+        </p>
+        <p data-testid="floor-objective">
+          Objective: defeat {state.floorKillTarget} enemies ({state.floorKills}/{state.floorKillTarget})
+          or find chest 🧰
+        </p>
+
+        <h4>Progression</h4>
+        <p data-testid="xp">XP: {state.progression.xp}</p>
+        <p data-testid="level">Level: {state.progression.level}</p>
+        <p data-testid="rank">Rank: {state.progression.rank}</p>
+        <p data-testid="kills">Kills: {state.progression.kills}</p>
+        <p data-testid="mutation">
+          Mutation: {state.progression.rankMutation ?? "none"}
+        </p>
+
+        {state.progression.rankChoicePending && (
+          <div
+            data-testid="rank-up-choice"
+            style={{
+              margin: "8px 0 12px",
+              padding: 8,
+              borderRadius: 6,
+              border: "1px solid #7c3aed",
+              background: "#1f1133",
+            }}
+          >
+            <strong>Rank-Up Available</strong>
+            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+              <button
+                data-testid="rank-choice-battlemage"
+                onClick={() => setState((s) => chooseRankMutation(s, "battlemage"))}
+              >
+                Battlemage (+1 draw each turn)
+              </button>
+              <button
+                data-testid="rank-choice-spellblade"
+                onClick={() => setState((s) => chooseRankMutation(s, "spellblade"))}
+              >
+                Spellblade (+1 AP each turn)
+              </button>
+            </div>
+          </div>
+        )}
 
         <h4>Hand</h4>
         <div data-testid="hand" style={{ display: "grid", gap: 8 }}>
@@ -136,7 +192,7 @@ export function App() {
             borderRadius: 6,
           }}
         >
-          {state.log.slice(-12).map((line, i) => (
+          {state.log.slice(-14).map((line, i) => (
             <div key={i}>• {line}</div>
           ))}
         </div>
