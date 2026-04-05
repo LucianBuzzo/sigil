@@ -21,12 +21,28 @@ const cardKindColors: Record<string, string> = {
 const cardArtUrl = (id: string, ext: "png" | "svg") =>
   new URL(`./card-art/${id}.${ext}`, window.location.href).toString();
 
+type FloatingText = {
+  id: number;
+  value: string;
+  x: number;
+  y: number;
+};
+
+const xpThreshold = (level: number) => {
+  const table = [0, 10, 25, 45, 70, 100];
+  return table[level] ?? 999999;
+};
+
 export function App() {
   const [state, setState] = useState(() => createNewGame(1));
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [drawnCardIds, setDrawnCardIds] = useState<Set<string>>(new Set());
+  const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const prevHandRef = useRef<string[]>([]);
   const combatLogRef = useRef<HTMLDivElement | null>(null);
+  const prevEnemyHpRef = useRef<number>(state.enemy.hp);
+  const prevHeroHpRef = useRef<number>(state.hero.hp);
+  const floatIdRef = useRef<number>(1);
 
   const handInstanceIds = useMemo(() => state.hand.map((c, i) => `${c.id}-${i}`), [state.hand]);
 
@@ -60,6 +76,38 @@ export function App() {
     el.scrollTop = el.scrollHeight;
   }, [state.log.length]);
 
+  useEffect(() => {
+    const prevHp = prevEnemyHpRef.current;
+    const currHp = state.enemy.hp;
+    prevEnemyHpRef.current = currHp;
+
+    if (currHp < prevHp) {
+      const dmg = prevHp - currHp;
+      const id = floatIdRef.current++;
+      setFloatingTexts((prev) => [...prev, { id, value: String(dmg), x: state.enemy.x, y: state.enemy.y }]);
+      const t = setTimeout(() => {
+        setFloatingTexts((prev) => prev.filter((f) => f.id !== id));
+      }, 950);
+      return () => clearTimeout(t);
+    }
+  }, [state.enemy.hp, state.enemy.x, state.enemy.y]);
+
+  useEffect(() => {
+    const prevHp = prevHeroHpRef.current;
+    const currHp = state.hero.hp;
+    prevHeroHpRef.current = currHp;
+
+    if (currHp < prevHp) {
+      const dmg = prevHp - currHp;
+      const id = floatIdRef.current++;
+      setFloatingTexts((prev) => [...prev, { id, value: String(dmg), x: state.hero.x, y: state.hero.y }]);
+      const t = setTimeout(() => {
+        setFloatingTexts((prev) => prev.filter((f) => f.id !== id));
+      }, 950);
+      return () => clearTimeout(t);
+    }
+  }, [state.hero.hp, state.hero.x, state.hero.y]);
+
   const grid = useMemo(() => {
     const byKey = new Map(state.map.tiles.map((t) => [`${t.x},${t.y}`, t.kind]));
     return Array.from({ length: state.map.height }, (_, y) =>
@@ -92,6 +140,12 @@ export function App() {
     { key: "armament", label: "Armament (+Arc Bolt card)" },
   ];
 
+  const xpStart = xpThreshold(state.progression.level - 1);
+  const xpEnd = xpThreshold(state.progression.level);
+  const xpSpan = Math.max(1, xpEnd - xpStart);
+  const xpProgressPct = Math.max(0, Math.min(100, ((state.progression.xp - xpStart) / xpSpan) * 100));
+  const shouldPulseEndTurn = state.phase === "hero" && state.ap.current <= 0;
+
   return (
     <div data-testid="app-root" style={{ padding: 16 }}>
       <style>{`
@@ -107,9 +161,33 @@ export function App() {
           height: 0;
           display: none;
         }
+        .floating-dmg {
+          position: absolute;
+          color: #fca5a5;
+          font-weight: 900;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.55);
+          pointer-events: none;
+          transform: translate(-50%, -50%);
+          animation: float-dmg 900ms ease-out forwards;
+          z-index: 20;
+        }
         @keyframes card-in {
           from { opacity: 0; transform: translateX(100vw) scale(0.98); }
           to { opacity: 1; transform: translateX(0) scale(1); }
+        }
+        @keyframes float-dmg {
+          0% { opacity: 0; transform: translate(-50%, -40%) scale(0.8); }
+          15% { opacity: 1; transform: translate(-50%, -55%) scale(1.1); }
+          100% { opacity: 0; transform: translate(-50%, -140%) scale(1); }
+        }
+        .end-turn-pulse {
+          animation: end-turn-pulse 1100ms ease-in-out infinite;
+          box-shadow: 0 0 0 rgba(251, 191, 36, 0.6);
+        }
+        @keyframes end-turn-pulse {
+          0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.65); }
+          60% { transform: scale(1.03); box-shadow: 0 0 0 12px rgba(251, 191, 36, 0); }
+          100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
         }
       `}</style>
 
@@ -172,10 +250,19 @@ export function App() {
                           background: kind === "wall" ? "#374151" : kind === "door" ? "#7c3aed" : "#111827",
                           display: "grid",
                           placeItems: "center",
+                          position: "relative",
+                          overflow: "visible",
                           fontSize: 16,
                         }}
                       >
                         {isHero ? "🧙" : isEnemy ? "💀" : isChest ? "🧰" : ""}
+                        {floatingTexts
+                          .filter((f) => f.x === x && f.y === y)
+                          .map((f) => (
+                            <span key={f.id} className="floating-dmg">
+                              {f.value}
+                            </span>
+                          ))}
                       </div>
                     );
                   })}
@@ -188,7 +275,14 @@ export function App() {
               <button data-testid="move-left" onClick={() => setState((s) => moveHero(s, -1, 0))}>←</button>
               <button data-testid="move-right" onClick={() => setState((s) => moveHero(s, 1, 0))}>→</button>
               <button data-testid="move-down" onClick={() => setState((s) => moveHero(s, 0, 1))}>↓</button>
-              <button data-testid="end-turn" onClick={() => setState((s) => endTurn(s))}>End Turn</button>
+              <button
+                data-testid="end-turn"
+                className={shouldPulseEndTurn ? "end-turn-pulse" : ""}
+                style={shouldPulseEndTurn ? { animation: "end-turn-pulse 1100ms ease-in-out infinite" } : undefined}
+                onClick={() => setState((s) => endTurn(s))}
+              >
+                End Turn
+              </button>
               <button data-testid="new-seed" onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000)))}>New Seed</button>
             </div>
           </section>
@@ -307,8 +401,32 @@ export function App() {
             )}
 
             <h4>Progression</h4>
-            <p data-testid="xp">XP: {state.progression.xp}</p>
-            <p data-testid="level">Level: {state.progression.level}</p>
+            <div style={{ marginBottom: 10 }}>
+              <div data-testid="level" style={{ textAlign: "center", fontWeight: 700, marginBottom: 6 }}>
+                Level {state.progression.level}
+              </div>
+              <div
+                data-testid="xp"
+                style={{
+                  height: 12,
+                  borderRadius: 999,
+                  overflow: "hidden",
+                  background: "#111827",
+                  border: "1px solid #374151",
+                }}
+                aria-label={`XP ${state.progression.xp - xpStart}/${xpSpan}`}
+                title={`XP ${state.progression.xp - xpStart}/${xpSpan} (total ${state.progression.xp})`}
+              >
+                <div
+                  style={{
+                    width: `${xpProgressPct}%`,
+                    height: "100%",
+                    background: "linear-gradient(90deg, #22c55e 0%, #84cc16 100%)",
+                    transition: "width 180ms ease",
+                  }}
+                />
+              </div>
+            </div>
             <p data-testid="rank">Rank: {state.progression.rank}</p>
             <p data-testid="kills">Kills: {state.progression.kills}</p>
             <p data-testid="mutation">Mutation: {state.progression.rankMutation ?? "none"}</p>
