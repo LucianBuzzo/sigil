@@ -1,0 +1,30 @@
+{
+  "style": "fantasy TCG illustration, painterly, dramatic lighting, high detail, no text, no logo, no border, no watermark",
+  "cards": [
+    {
+      "id": "slash",
+      "seed": 1101,
+      "prompt": "close-up steel blade slash arc cutting through shadow, motion blur streaks, sparks"
+    },
+    {
+      "id": "lunge",
+      "seed": 1102,
+      "prompt": "agile armored duelist lunging forward, dynamic perspective, speed lines"
+    },
+    {
+      "id": "shield-bash",
+      "seed": 1103,
+      "prompt": "warrior smashing enemy with heavy wooden shield, impact burst, debris"
+    },
+    {
+      "id": "parry",
+      "seed": 1104,
+      "prompt": "precise defensive sword parry against glowing attack, tense duel moment"
+    },
+    {
+      "id": "arc-bolt",
+      "seed": 1105,
+      "prompt": "arcane lightning bolt from mage hand, blue-purple energy, crackling runes"
+    }
+  ]
+}

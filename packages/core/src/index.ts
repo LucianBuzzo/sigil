@@ -63,7 +63,28 @@ const ENEMY_ATTACK_DAMAGE = 2;
 
 function buildDeckFromItems(loadout: string[]): Card[] {
   const ids = loadout.flatMap((itemId) => items.find((i) => i.id === itemId)?.cards ?? []);
-  return ids.map((id) => cards.find((c) => c.id === id)!).filter(Boolean);
+  const expanded = ids.flatMap((id) => [id, id, id, id]);
+  return expanded.map((id) => cards.find((c) => c.id === id)!).filter(Boolean);
+}
+
+function seededRandom(seed: number): () => number {
+  let s = (seed >>> 0) || 1;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffleDeck(deck: Card[], seed: number): Card[] {
+  const next = [...deck];
+  const rand = seededRandom(seed);
+  for (let i = next.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [next[i], next[j]] = [next[j]!, next[i]!];
+  }
+  return next;
 }
 
 function drawCards(state: GameState, count: number): GameState {
@@ -298,8 +319,9 @@ function applyReward(state: GameState, choice: RewardChoice): GameState {
       y: pending.map.heroSpawn.y,
     },
     enemy: pending.enemy,
+    deck: shuffleDeck([...next.deck, ...next.discard, ...next.hand], pending.seed),
     hand: [],
-    discard: [...next.discard, ...next.hand],
+    discard: [],
     rewardOptions: [],
     pendingFloor: null,
     log: [...next.log, `Descending to Floor ${pending.floor}...`, `Turn ${next.turn + 1} started.`],
@@ -387,8 +409,6 @@ function enemyAct(state: GameState): GameState {
     phase: "hero",
     ap: { max: nextMaxAp, current: nextMaxAp },
     hero: tickStatuses(next.hero),
-    hand: [],
-    discard: [...next.discard, ...next.hand],
   };
 
   const drawn = drawCards(
@@ -396,7 +416,7 @@ function enemyAct(state: GameState): GameState {
       ...withNextTurn,
       log: [...withNextTurn.log, `Turn ${withNextTurn.turn} started.`],
     },
-    2 + bonusDraw
+    1 + bonusDraw
   );
 
   return checkGameOver(drawn);
@@ -438,7 +458,7 @@ export function getCardRangeTiles(state: GameState, cardId: string): Array<{ x: 
 
 export function createNewGame(seed = 1): GameState {
   const map = generateBastionMap(seed);
-  const deck = buildDeckFromItems(["rust-sword", "oak-shield", "apprentice-robe"]);
+  const deck = shuffleDeck(buildDeckFromItems(["rust-sword", "oak-shield", "apprentice-robe"]), seed);
   const chest = chooseChestTile(map);
 
   const initial: GameState = {
