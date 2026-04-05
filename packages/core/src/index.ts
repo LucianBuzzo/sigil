@@ -1,4 +1,4 @@
-import { cards, items, type Card, type StatusKind } from "@sigil/content";
+import { cards, classes, items, type Card, type StatusKind } from "@sigil/content";
 import { generateBastionMap } from "@sigil/world";
 
 export type StatusEffect = { kind: StatusKind; duration: number };
@@ -13,8 +13,8 @@ export type Entity = {
   statuses: StatusEffect[];
 };
 
-export type EnemyArchetype = "skeleton" | "brute" | "acolyte";
-export type RankMutation = "battlemage" | "spellblade" | null;
+export type EnemyArchetype = "skeleton" | "brute" | "acolyte" | "reaver";
+export type RankMutation = "battlemage" | "spellblade" | "reaper" | null;
 export type RewardChoice = "vigor" | "focus" | "armament";
 
 export type Progression = {
@@ -37,6 +37,7 @@ export type PendingFloor = {
 };
 
 export type GameState = {
+  classId: string;
   turn: number;
   phase: "hero" | "enemy" | "reward" | "gameover";
   ap: { current: number; max: number };
@@ -220,6 +221,7 @@ function chooseChestTile(map: ReturnType<typeof generateBastionMap>): { x: numbe
 }
 
 function enemyArchetypeForFloor(floor: number): EnemyArchetype {
+  if (floor % 7 === 0) return "reaver";
   if (floor % 5 === 0) return "acolyte";
   if (floor % 3 === 0) return "brute";
   return "skeleton";
@@ -238,6 +240,10 @@ function spawnEnemyForFloor(
   if (arch === "acolyte") {
     const hp = 12 + floor * 3;
     return { ...state.enemy, name: "Hex Acolyte", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y, statuses: [{ kind: "slow", duration: 1 }] };
+  }
+  if (arch === "reaver") {
+    const hp = 14 + floor * 3;
+    return { ...state.enemy, name: "Grave Reaver", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y, statuses: [{ kind: "bleed", duration: 1 }] };
   }
   const hp = 12 + floor * 3;
   return { ...state.enemy, name: "Skeleton", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y, statuses: [] };
@@ -365,7 +371,7 @@ function enemyAct(state: GameState): GameState {
     const dist = manhattan(next.enemy, next.hero);
 
     if (dist <= 1) {
-      let dmg = ENEMY_ATTACK_DAMAGE;
+      let dmg = ENEMY_ATTACK_DAMAGE + (next.enemy.name === "Grave Reaver" ? 1 : 0);
       if (hasStatus(next.hero, "guard")) dmg = Math.max(0, dmg - 1);
       next = {
         ...next,
@@ -456,12 +462,14 @@ export function getCardRangeTiles(state: GameState, cardId: string): Array<{ x: 
     .map((t) => ({ x: t.x, y: t.y }));
 }
 
-export function createNewGame(seed = 1): GameState {
+export function createNewGame(seed = 1, classId = "warden"): GameState {
   const map = generateBastionMap(seed);
-  const deck = shuffleDeck(buildDeckFromItems(["rust-sword", "oak-shield", "apprentice-robe"]), seed);
+  const selectedClass = classes.find((c) => c.id === classId) ?? classes[0]!;
+  const deck = shuffleDeck(buildDeckFromItems(selectedClass.items), seed);
   const chest = chooseChestTile(map);
 
   const initial: GameState = {
+    classId: selectedClass.id,
     turn: 1,
     phase: "hero",
     ap: { max: BASE_AP, current: BASE_AP },
@@ -521,6 +529,13 @@ export function chooseRankMutation(state: GameState, mutation: Exclude<RankMutat
     next = {
       ...drawCards(next, 1),
       log: [...next.log, "Battlemage bonus: draw +1 card on rank-up."],
+    };
+  }
+
+  if (mutation === "reaper") {
+    next = {
+      ...next,
+      log: [...next.log, "Reaper bonus: attack cards deal +1 damage."],
     };
   }
 
@@ -587,9 +602,11 @@ export function playCard(state: GameState, cardId: string): GameState {
   let line = `${card.name} fizzles.`;
 
   if (dist <= card.range && card.value > 0 && next.enemy.hp > 0) {
-    const newEnemyHp = Math.max(0, next.enemy.hp - card.value);
+    const bonusDamage = next.progression.rankMutation === "reaper" && card.kind === "attack" ? 1 : 0;
+    const totalDamage = card.value + bonusDamage;
+    const newEnemyHp = Math.max(0, next.enemy.hp - totalDamage);
     next = { ...next, enemy: { ...next.enemy, hp: newEnemyHp } };
-    line = `${next.hero.name} uses ${card.name} for ${card.value} damage.`;
+    line = `${next.hero.name} uses ${card.name} for ${totalDamage} damage.`;
 
     if (card.applyStatus && newEnemyHp > 0) {
       next = {

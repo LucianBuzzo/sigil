@@ -34,7 +34,8 @@ const xpThreshold = (level: number) => {
 };
 
 export function App() {
-  const [state, setState] = useState(() => createNewGame(1));
+  const [selectedClassId, setSelectedClassId] = useState<string>("warden");
+  const [state, setState] = useState(() => createNewGame(1, "warden"));
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [drawnCardIds, setDrawnCardIds] = useState<Set<string>>(new Set());
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
@@ -223,7 +224,10 @@ export function App() {
                 <p style={{ margin: "6px 0" }}>
                   Floors: {state.runSummary?.floorsCleared} | Kills: {state.runSummary?.kills} | Lvl: {state.runSummary?.level} | Rank: {state.runSummary?.rank}
                 </p>
-                <button data-testid="new-run" onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000)))}>
+                <button
+                  data-testid="new-run"
+                  onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000), selectedClassId))}
+                >
                   Start New Run
                 </button>
               </div>
@@ -283,7 +287,24 @@ export function App() {
               >
                 End Turn
               </button>
-              <button data-testid="new-seed" onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000)))}>New Seed</button>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, opacity: 0.9 }}>Class</span>
+                <select
+                  data-testid="class-select"
+                  value={selectedClassId}
+                  onChange={(e) => setSelectedClassId(e.currentTarget.value)}
+                >
+                  <option value="warden">Warden</option>
+                  <option value="vanguard">Vanguard</option>
+                  <option value="stalker">Stalker</option>
+                </select>
+              </label>
+              <button
+                data-testid="new-seed"
+                onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000), selectedClassId))}
+              >
+                New Seed
+              </button>
             </div>
           </section>
 
@@ -437,6 +458,7 @@ export function App() {
                 <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                   <button data-testid="rank-choice-battlemage" onClick={() => setState((s) => chooseRankMutation(s, "battlemage"))}>Battlemage (+1 draw each turn)</button>
                   <button data-testid="rank-choice-spellblade" onClick={() => setState((s) => chooseRankMutation(s, "spellblade"))}>Spellblade (+1 AP each turn)</button>
+                  <button data-testid="rank-choice-reaper" onClick={() => setState((s) => chooseRankMutation(s, "reaper"))}>Reaper (+1 attack damage)</button>
                 </div>
               </div>
             )}
