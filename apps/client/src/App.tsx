@@ -33,9 +33,15 @@ const xpThreshold = (level: number) => {
   return table[level] ?? 999999;
 };
 
+const initialSeedFromUrl = () => {
+  const v = Number(new URLSearchParams(window.location.search).get("seed") ?? "1");
+  return Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1;
+};
+
 export function App() {
   const [selectedClassId, setSelectedClassId] = useState<string>("warden");
-  const [state, setState] = useState(() => createNewGame(1, "warden"));
+  const [seedInput, setSeedInput] = useState<number>(() => initialSeedFromUrl());
+  const [state, setState] = useState(() => createNewGame(initialSeedFromUrl(), "warden"));
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [drawnCardIds, setDrawnCardIds] = useState<Set<string>>(new Set());
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
@@ -226,7 +232,7 @@ export function App() {
                 </p>
                 <button
                   data-testid="new-run"
-                  onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000), selectedClassId))}
+                  onClick={() => setState(createNewGame(seedInput, selectedClassId))}
                 >
                   Start New Run
                 </button>
@@ -299,11 +305,32 @@ export function App() {
                   <option value="stalker">Stalker</option>
                 </select>
               </label>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, opacity: 0.9 }}>Seed</span>
+                <input
+                  data-testid="seed-input"
+                  type="number"
+                  min={1}
+                  value={seedInput}
+                  onChange={(e) => setSeedInput(Math.max(1, Number(e.currentTarget.value) || 1))}
+                  style={{ width: 90 }}
+                />
+              </label>
               <button
                 data-testid="new-seed"
-                onClick={() => setState(createNewGame(Math.floor(Math.random() * 1000), selectedClassId))}
+                onClick={() => {
+                  const s = Math.max(1, Math.floor(Math.random() * 100000));
+                  setSeedInput(s);
+                  setState(createNewGame(s, selectedClassId));
+                }}
               >
                 New Seed
+              </button>
+              <button
+                data-testid="start-run"
+                onClick={() => setState(createNewGame(seedInput, selectedClassId))}
+              >
+                Start Run
               </button>
             </div>
           </section>

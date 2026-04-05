@@ -12,6 +12,7 @@
     "typecheck": "npm run typecheck -w @sigil/client",
     "generate:maps": "npm run generate:maps -w @sigil/world",
     "qa:smoke": "node qa/run-smoke.mjs",
+    "qa:simulate": "node qa/simulate-balance.mjs",
     "art:check": "node tools/card-art/check-art.mjs",
     "art:fit": "node tools/card-art/fit-card-art.mjs",
     "art:placeholder": "node tools/card-art/generate-placeholder-art.mjs",

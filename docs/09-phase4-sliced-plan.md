@@ -23,15 +23,15 @@ Goal: deepen progression choices beyond current rank mutation pair.
 - [x] Add/update UX copy in right sidebar for mutation effects
 - [x] Typecheck passes
 
-## Slice 3 — Simulation Harness for Balancing
+## Slice 3 — Simulation Harness for Balancing (initial pass complete)
 
 Goal: make balance tuning measurable and repeatable.
 
-- [ ] Add headless simulation runner script (batch over seeds)
-- [ ] Capture win/loss, avg floors, avg turns, avg kills
-- [ ] Add knobs for iterations / seed start / class selection
-- [ ] Output concise markdown/console summary for comparisons
-- [ ] Document usage in docs
+- [x] Add headless simulation runner script (batch over seeds)
+- [x] Capture win/loss, avg floors, avg turns, avg kills
+- [x] Add knobs for iterations / seed start / class selection
+- [x] Output concise markdown/console summary for comparisons
+- [x] Document usage in docs
 
 ## Slice 4 — Balance Pass + Targets
 
