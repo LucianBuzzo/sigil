@@ -6,6 +6,8 @@ A turn-based tactical RPG inspired by *Card Hunter*.
 
 - Procedural environment generation powered by **dungeoneer**
 - Grid-based, turn-based tactical combat
+- **Party combat:** control 3 allies with independent decks, hands, discard piles, AP, positions, and statuses
+- **Multi-enemy battles:** select enemy targets while the AI resolves enemy turns in deterministic array order
 - **Equipment grants cards** used for attacks, spells, movement, and utility
 - LitRPG setting where levels, classes, stats, and build theory are common public knowledge
 

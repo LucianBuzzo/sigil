@@ -14,6 +14,8 @@
 - Data-driven content definitions
 - Seeded RNG boundaries
 - Replay logs for debugging
+- Party-vs-group combat model: 3 allies (independent AP/deck/hand/discard/status) and ordered enemy groups
+- Deterministic targeting: explicit active ally + selected enemy target in state
 
 ## Dungeoneer Integration
 

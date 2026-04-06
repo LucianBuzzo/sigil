@@ -25,9 +25,9 @@ npm run qa:smoke
 ## Checks included
 
 - `smoke-load.mjs` — page loads and core UI exists
-- `smoke-movement.mjs` — hero can move at least one tile
+- `smoke-movement.mjs` — active ally can move at least one tile
 - `smoke-turn-cards.mjs` — ending turn increments turn and produces hand state
-- `smoke-combat.mjs` — playing a card updates combat state/log
+- `smoke-combat.mjs` — playing a card updates selected-enemy combat state/log
 
 ## Optional URL override
 
