@@ -3,6 +3,7 @@ import {
   chooseRankMutation,
   chooseReward,
   createNewGame,
+  createStarterDeckConfig,
   endTurn,
   getCardRangeTiles,
   moveHero,
@@ -11,6 +12,7 @@ import {
   selectEnemyTarget,
   type RewardChoice,
 } from "@sigil/core";
+import { cards, classes, items } from "@sigil/content";
 
 const tileSize = 36;
 
@@ -40,10 +42,13 @@ const initialSeedFromUrl = () => {
   return Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1;
 };
 
+type PlayerClassId = "warden" | "vanguard" | "stalker";
+
 export function App() {
-  const [selectedClassId, setSelectedClassId] = useState<string>("warden");
+  const [selectedClassId, setSelectedClassId] = useState<PlayerClassId>("warden");
   const [seedInput, setSeedInput] = useState<number>(() => initialSeedFromUrl());
-  const [state, setState] = useState(() => createNewGame(initialSeedFromUrl(), "warden"));
+  const [deckConfig, setDeckConfig] = useState(() => createStarterDeckConfig("warden"));
+  const [state, setState] = useState(() => createNewGame(initialSeedFromUrl(), "warden", createStarterDeckConfig("warden").activeDeckCardCounts));
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [drawnCardIds, setDrawnCardIds] = useState<Set<string>>(new Set());
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
@@ -143,6 +148,88 @@ export function App() {
     return inRangeTiles.has(`${selectedEnemy.x},${selectedEnemy.y}`);
   }, [selectedCardId, inRangeTiles, selectedEnemy]);
 
+  useEffect(() => {
+    setDeckConfig(createStarterDeckConfig(selectedClassId));
+  }, [selectedClassId]);
+
+  const activeDeckSize = useMemo(
+    () => Object.values(deckConfig.activeDeckCardCounts).reduce((a, b) => a + b, 0),
+    [deckConfig.activeDeckCardCounts]
+  );
+
+  const cardSourceById = useMemo(() => {
+    const selected = classes.find((c) => c.id === selectedClassId);
+    const classBase = new Set(selected?.baseCards ?? []);
+    const classItems = new Set(selected?.items ?? []);
+    const itemCardMap = new Map<string, string>();
+    items.forEach((item) => item.cards.forEach((cardId) => itemCardMap.set(cardId, item.id)));
+
+    const out = new Map<string, string>();
+    cards.forEach((card) => {
+      if (classBase.has(card.id)) {
+        out.set(card.id, "class");
+        return;
+      }
+      const itemId = itemCardMap.get(card.id);
+      if (itemId && classItems.has(itemId)) {
+        out.set(card.id, "gear");
+        return;
+      }
+      if (card.id.startsWith("basic-")) {
+        out.set(card.id, "neutral");
+        return;
+      }
+      out.set(card.id, "unlocked");
+    });
+    return out;
+  }, [selectedClassId]);
+
+  const ownedCardRows = useMemo(
+    () => Object.entries(deckConfig.ownedCardCounts)
+      .map(([id, owned]) => ({
+        id,
+        owned,
+        active: deckConfig.activeDeckCardCounts[id] ?? 0,
+        name: cards.find((c) => c.id === id)?.name ?? id,
+        source: cardSourceById.get(id) ?? "unknown",
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [deckConfig, cardSourceById]
+  );
+
+  const deckWarnings = useMemo(() => {
+    const warnings: string[] = [];
+    if (activeDeckSize < deckConfig.deckRules.minSize) {
+      warnings.push(`Deck below minimum size (${activeDeckSize}/${deckConfig.deckRules.minSize}).`);
+    }
+
+    const overCap = Object.entries(deckConfig.activeDeckCardCounts).filter(([, count]) => count > deckConfig.deckRules.maxCopies);
+    if (overCap.length) {
+      warnings.push(`Some cards exceed copy cap (${deckConfig.deckRules.maxCopies}).`);
+    }
+
+    if (!deckConfig.classLockOverrides.allowOffClassCards) {
+      const offClass = Object.entries(deckConfig.activeDeckCardCounts).some(([id, count]) => {
+        if (count <= 0) return false;
+        const card = cards.find((c) => c.id === id);
+        return !!(card?.allowedClasses && !card.allowedClasses.includes(selectedClassId));
+      });
+      if (offClass) warnings.push("Deck contains off-class cards while class lock is strict.");
+    }
+
+    return warnings;
+  }, [activeDeckSize, deckConfig, selectedClassId]);
+
+  const setActiveCardCopies = (cardId: string, nextCount: number) => {
+    setDeckConfig((cfg) => {
+      const owned = cfg.ownedCardCounts[cardId] ?? 0;
+      const clamped = Math.max(0, Math.min(nextCount, owned, cfg.deckRules.maxCopies));
+      const next = { ...cfg.activeDeckCardCounts, [cardId]: clamped };
+      if (clamped === 0) delete next[cardId];
+      return { ...cfg, activeDeckCardCounts: next };
+    });
+  };
+
   const onCardClick = (cardId: string) => {
     if (selectedCardId !== cardId) {
       setSelectedCardId(cardId);
@@ -198,7 +285,7 @@ export function App() {
                 <p style={{ margin: "6px 0" }}>
                   Floors: {state.runSummary?.floorsCleared} | Kills: {state.runSummary?.kills} | Lvl: {state.runSummary?.level} | Rank: {state.runSummary?.rank}
                 </p>
-                <button data-testid="new-run" onClick={() => setState(createNewGame(seedInput, selectedClassId))}>
+                <button data-testid="new-run" onClick={() => setState(createNewGame(seedInput, selectedClassId, deckConfig.activeDeckCardCounts))}>
                   Start New Run
                 </button>
               </div>
@@ -259,7 +346,7 @@ export function App() {
               </button>
               <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontSize: 12, opacity: 0.9 }}>Class</span>
-                <select data-testid="class-select" value={selectedClassId} onChange={(e) => setSelectedClassId(e.currentTarget.value)}>
+                <select data-testid="class-select" value={selectedClassId} onChange={(e) => setSelectedClassId(e.currentTarget.value as PlayerClassId)}>
                   <option value="warden">Warden</option>
                   <option value="vanguard">Vanguard</option>
                   <option value="stalker">Stalker</option>
@@ -272,9 +359,46 @@ export function App() {
               <button data-testid="new-seed" onClick={() => {
                 const s = Math.max(1, Math.floor(Math.random() * 100000));
                 setSeedInput(s);
-                setState(createNewGame(s, selectedClassId));
+                setState(createNewGame(s, selectedClassId, deckConfig.activeDeckCardCounts));
               }}>New Seed</button>
-              <button data-testid="start-run" onClick={() => setState(createNewGame(seedInput, selectedClassId))}>Start Run</button>
+              <button data-testid="start-run" onClick={() => setState(createNewGame(seedInput, selectedClassId, deckConfig.activeDeckCardCounts))} disabled={activeDeckSize < deckConfig.deckRules.minSize}>Start Run</button>
+            </div>
+          </section>
+
+          <section data-testid="deck-builder" style={{ border: "1px solid #1f2937", borderRadius: 8, padding: 10, background: "#0b1220" }}>
+            <h4 style={{ margin: "0 0 8px" }}>Deck Builder</h4>
+            <p style={{ margin: "0 0 8px", fontSize: 12, opacity: 0.9 }}>
+              Active deck: {activeDeckSize}/{deckConfig.deckRules.minSize} minimum (max {deckConfig.deckRules.maxCopies} copies per card)
+            </p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <button
+                data-testid="deck-reset-starter"
+                onClick={() => {
+                  const starter = createStarterDeckConfig(selectedClassId);
+                  setDeckConfig(starter);
+                }}
+              >
+                Reset to Starter Deck
+              </button>
+            </div>
+            {deckWarnings.length > 0 && (
+              <div data-testid="deck-warnings" style={{ border: "1px solid #f59e0b", background: "#2a1f06", borderRadius: 6, padding: 8, marginBottom: 8 }}>
+                {deckWarnings.map((w, i) => <div key={i}>⚠️ {w}</div>)}
+              </div>
+            )}
+            <div style={{ display: "grid", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+              {ownedCardRows.map((row) => (
+                <div key={row.id} data-testid={`deck-card-${row.id}`} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto auto", gap: 8, alignItems: "center" }}>
+                  <span>{row.name}</span>
+                  <small style={{ opacity: 0.8 }}>{row.source}</small>
+                  <small>owned {row.owned}</small>
+                  <button data-testid={`deck-minus-${row.id}`} onClick={() => setActiveCardCopies(row.id, row.active - 1)}>-</button>
+                  <div style={{ minWidth: 70, textAlign: "right" }}>
+                    <strong>{row.active}</strong>
+                    <button data-testid={`deck-plus-${row.id}`} style={{ marginLeft: 8 }} onClick={() => setActiveCardCopies(row.id, row.active + 1)}>+</button>
+                  </div>
+                </div>
+              ))}
             </div>
           </section>
 
@@ -384,6 +508,9 @@ export function App() {
             <p data-testid="rank">Rank: {state.progression.rank}</p>
             <p data-testid="kills">Kills: {state.progression.kills}</p>
             <p data-testid="mutation">Mutation: {state.progression.rankMutation ?? "none"}</p>
+            <p data-testid="deck-active-size">Deck size: {Object.values(state.activeDeckCardCounts).reduce((a, b) => a + b, 0)} (min {state.deckRules.minSize})</p>
+            <p data-testid="deck-owned-size">Owned cards: {Object.values(state.ownedCardCounts).reduce((a, b) => a + b, 0)}</p>
+            <p data-testid="deck-lock-state">Class lock: {state.classLockOverrides.allowOffClassCards || state.classLockOverrides.allowOffClassGear ? "override enabled" : "strict"}</p>
 
             {state.progression.rankChoicePending && (
               <div data-testid="rank-up-choice" style={{ margin: "8px 0 12px", padding: 8, borderRadius: 6, border: "1px solid #7c3aed", background: "#1f1133" }}>

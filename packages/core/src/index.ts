@@ -1,4 +1,4 @@
-import { cards, classes, items, type Card, type StatusKind } from "@sigil/content";
+import { cards, classes, items, type Card, type ClassId, type StatusKind } from "@sigil/content";
 import { generateBastionMap } from "@sigil/world";
 
 export type StatusEffect = { kind: StatusKind; duration: number };
@@ -43,8 +43,11 @@ export type PendingFloor = {
   clearedBy: "kills" | "chest";
 };
 
+export type DeckRules = { minSize: number; maxCopies: number };
+export type ClassLockOverrides = { allowOffClassCards: boolean; allowOffClassGear: boolean };
+
 export type GameState = {
-  classId: string;
+  classId: ClassId;
   turn: number;
   phase: "hero" | "enemy" | "reward" | "gameover";
   map: ReturnType<typeof generateBastionMap>;
@@ -61,17 +64,119 @@ export type GameState = {
   rewardOptions: RewardChoice[];
   pendingFloor: PendingFloor | null;
   runSummary: null | { floorsCleared: number; kills: number; level: number; rank: number; mutation: RankMutation };
+  exhaustionActive: boolean;
+  deckRules: DeckRules;
+  classLockOverrides: ClassLockOverrides;
+  ownedCardCounts: Record<string, number>;
+  activeDeckCardCounts: Record<string, number>;
   log: string[];
 };
 
 const BASE_AP = 2;
-const ENEMY_ATTACK_DAMAGE = 2;
+const ENEMY_ATTACK_DAMAGE = 1.6;
+const ENEMY_HP_SCALE = 0.75;
 const PARTY_SIZE = 3;
+const MIN_DECK_SIZE = 40;
+const MAX_CARD_COPIES = 4;
+const STARTER_FILLER_CARD_IDS = ["basic-strike", "basic-bolt", "basic-guard", "basic-jab", "basic-stance"];
 
-function buildDeckFromItems(loadout: string[]): Card[] {
-  const ids = loadout.flatMap((itemId) => items.find((i) => i.id === itemId)?.cards ?? []);
-  const expanded = ids.flatMap((id) => [id, id, id, id]);
-  return expanded.map((id) => cards.find((c) => c.id === id)!).filter(Boolean);
+function isCardAllowedForClass(card: Card, classId: ClassId, allowOffClassCards = false): boolean {
+  if (allowOffClassCards) return true;
+  return !card.allowedClasses || card.allowedClasses.includes(classId);
+}
+
+function countCards(deck: Card[]): Record<string, number> {
+  return deck.reduce<Record<string, number>>((acc, card) => {
+    acc[card.id] = (acc[card.id] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function addCardToCounts(counts: Record<string, number>, cardId: string, maxCopies?: number): Record<string, number> {
+  const next = { ...counts };
+  const current = next[cardId] ?? 0;
+  if (typeof maxCopies === "number" && current >= maxCopies) return next;
+  next[cardId] = current + 1;
+  return next;
+}
+
+function buildStarterDeck(
+  classId: ClassId,
+  loadout: string[],
+  opts: ClassLockOverrides = { allowOffClassCards: false, allowOffClassGear: false }
+): Card[] {
+  const selectedClass = classes.find((c) => c.id === classId);
+  const classBaseIds = selectedClass?.baseCards ?? [];
+  const allowedItemCards = loadout
+    .map((itemId) => items.find((i) => i.id === itemId))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .filter((item) => opts.allowOffClassGear || !item.allowedClasses || item.allowedClasses.includes(classId))
+    .flatMap((item) => item.cards);
+
+  const sourceIds = [...classBaseIds, ...allowedItemCards, ...STARTER_FILLER_CARD_IDS];
+  const counts = new Map<string, number>();
+  const deck: Card[] = [];
+
+  const tryAddCard = (cardId: string): boolean => {
+    const card = cards.find((c) => c.id === cardId);
+    if (!card || !isCardAllowedForClass(card, classId, opts.allowOffClassCards)) return false;
+    const current = counts.get(card.id) ?? 0;
+    if (current >= MAX_CARD_COPIES) return false;
+    deck.push(card);
+    counts.set(card.id, current + 1);
+    return true;
+  };
+
+  for (const id of sourceIds) {
+    for (let i = 0; i < MAX_CARD_COPIES; i++) tryAddCard(id);
+  }
+
+  let guard = 0;
+  while (deck.length < MIN_DECK_SIZE && guard < 500) {
+    guard += 1;
+    const before = deck.length;
+    for (const id of STARTER_FILLER_CARD_IDS) {
+      tryAddCard(id);
+      if (deck.length >= MIN_DECK_SIZE) break;
+    }
+    if (deck.length === before) break;
+  }
+
+  return deck.slice(0, MIN_DECK_SIZE);
+}
+
+function buildDeckFromCounts(
+  counts: Record<string, number>,
+  classId: ClassId,
+  opts: ClassLockOverrides
+): Card[] {
+  const deck: Card[] = [];
+  for (const [cardId, count] of Object.entries(counts)) {
+    const card = cards.find((c) => c.id === cardId);
+    if (!card || !isCardAllowedForClass(card, classId, opts.allowOffClassCards)) continue;
+    const clamped = Math.max(0, Math.floor(count));
+    for (let i = 0; i < clamped; i++) deck.push(card);
+  }
+  return deck;
+}
+
+export function createStarterDeckConfig(classId: ClassId): {
+  deckRules: DeckRules;
+  classLockOverrides: ClassLockOverrides;
+  ownedCardCounts: Record<string, number>;
+  activeDeckCardCounts: Record<string, number>;
+} {
+  const selectedClass = classes.find((c) => c.id === classId) ?? classes[0]!;
+  const deckRules: DeckRules = { minSize: MIN_DECK_SIZE, maxCopies: MAX_CARD_COPIES };
+  const classLockOverrides: ClassLockOverrides = { allowOffClassCards: false, allowOffClassGear: false };
+  const starterDeck = buildStarterDeck(selectedClass.id, selectedClass.items, classLockOverrides);
+  const counts = countCards(starterDeck);
+  return {
+    deckRules,
+    classLockOverrides,
+    ownedCardCounts: counts,
+    activeDeckCardCounts: { ...counts },
+  };
 }
 
 function seededRandom(seed: number): () => number {
@@ -263,18 +368,18 @@ function spawnEnemyForFloor(
   const arch = enemyArchetypeForFloor(floor + index);
   const baseId = `enemy-${floor}-${index + 1}`;
   if (arch === "brute") {
-    const hp = 16 + floor * 4;
+    const hp = Math.max(1, Math.round((16 + floor * 4) * ENEMY_HP_SCALE));
     return { ...templateEnemy, id: baseId, name: "Bone Brute", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y + (index % 2), statuses: [] };
   }
   if (arch === "acolyte") {
-    const hp = 12 + floor * 3;
+    const hp = Math.max(1, Math.round((12 + floor * 3) * ENEMY_HP_SCALE));
     return { ...templateEnemy, id: baseId, name: "Hex Acolyte", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y + (index % 2), statuses: [{ kind: "slow", duration: 1 }] };
   }
   if (arch === "reaver") {
-    const hp = 14 + floor * 3;
+    const hp = Math.max(1, Math.round((14 + floor * 3) * ENEMY_HP_SCALE));
     return { ...templateEnemy, id: baseId, name: "Grave Reaver", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y + (index % 2), statuses: [{ kind: "bleed", duration: 1 }] };
   }
-  const hp = 12 + floor * 3;
+  const hp = Math.max(1, Math.round((12 + floor * 3) * ENEMY_HP_SCALE));
   return { ...templateEnemy, id: baseId, name: "Skeleton", hp, maxHp: hp, x: map.enemySpawn.x, y: map.enemySpawn.y + (index % 2), statuses: [] };
 }
 
@@ -377,6 +482,8 @@ function applyReward(state: GameState, choice: RewardChoice): GameState {
     next.log = [...next.log, "Reward chosen: Focus (+1 AP this and future turns)."];
   } else {
     next.party = next.party.map((ally) => ({ ...ally, deck: [...ally.deck, cards.find((c) => c.id === "arc-bolt")!] }));
+    next.ownedCardCounts = addCardToCounts(next.ownedCardCounts, "arc-bolt");
+    next.activeDeckCardCounts = addCardToCounts(next.activeDeckCardCounts, "arc-bolt", next.deckRules.maxCopies);
     next.log = [...next.log, "Reward chosen: Armament (+Arc Bolt card per ally)."];
   }
 
@@ -461,7 +568,7 @@ function enemyAct(state: GameState): GameState {
       const dist = manhattan(freshEnemy, target);
 
       if (dist <= 1) {
-        let dmg = ENEMY_ATTACK_DAMAGE + (freshEnemy.name === "Grave Reaver" ? 1 : 0);
+        let dmg = Math.max(1, Math.round(ENEMY_ATTACK_DAMAGE + (freshEnemy.name === "Grave Reaver" ? 1 : 0)));
         if (hasStatus(target, "guard")) dmg = Math.max(0, dmg - 1);
         next = {
           ...next,
@@ -506,30 +613,53 @@ function enemyAct(state: GameState): GameState {
   const bonusDraw = next.progression.rankMutation === "battlemage" ? 1 : 0;
   const apMax = BASE_AP + (next.progression.rankMutation === "spellblade" ? 1 : 0);
 
+  let reshuffleTriggered = false;
+
   const withNextTurn: GameState = {
     ...next,
     turn: next.turn + 1,
     phase: "hero",
     party: next.party.map((ally) => {
+      const drawsThisTurn = 1 + bonusDraw;
+      if (ally.deck.length < drawsThisTurn && ally.discard.length > 0) {
+        reshuffleTriggered = true;
+      }
       const reset = {
         ...ally,
         ap: { max: ally.ap.max, current: ally.ap.max || apMax },
       };
       return drawCardsForAlly(reset, 1 + bonusDraw);
     }),
+    exhaustionActive: next.exhaustionActive || reshuffleTriggered,
   };
 
+  const withFatigue = withNextTurn.exhaustionActive
+    ? {
+        ...withNextTurn,
+        party: withNextTurn.party.map((ally) => ({
+          ...ally,
+          hp: ally.hp > 0 ? Math.max(0, ally.hp - 1) : ally.hp,
+        })),
+        log: [
+          ...withNextTurn.log,
+          reshuffleTriggered
+            ? "Exhaustion triggered: first discard reshuffle. Exhaustion is now active for this run. All allies take 1 damage."
+            : "Exhaustion: all allies take 1 damage.",
+        ],
+      }
+    : withNextTurn;
+
   return checkGameOver({
-    ...withNextTurn,
-    activeAllyId: withNextTurn.party.find((a) => a.hp > 0)?.id ?? withNextTurn.activeAllyId,
-    log: [...withNextTurn.log, `Turn ${withNextTurn.turn} started.`],
+    ...withFatigue,
+    activeAllyId: withFatigue.party.find((a) => a.hp > 0)?.id ?? withFatigue.activeAllyId,
+    log: [...withFatigue.log, `Turn ${withFatigue.turn} started.`],
   });
 }
 
 function spawnReinforcement(state: GameState): GameState {
   const nextIdx = state.floorKills + state.enemies.length + 1;
   const reinforcement = spawnEnemyForFloor(
-    state.enemies[0] ?? { id: "enemy", name: "Skeleton", hp: 10, maxHp: 10, x: state.map.enemySpawn.x, y: state.map.enemySpawn.y, statuses: [] },
+    state.enemies[0] ?? { id: "enemy", name: "Skeleton", hp: 8, maxHp: 8, x: state.map.enemySpawn.x, y: state.map.enemySpawn.y, statuses: [] },
     state.floor,
     state.map,
     nextIdx
@@ -579,18 +709,30 @@ export function getCardRangeTiles(state: GameState, cardId: string): Array<{ x: 
     .map((t) => ({ x: t.x, y: t.y }));
 }
 
-export function createNewGame(seed = 1, classId = "warden"): GameState {
+export function createNewGame(
+  seed = 1,
+  classId: ClassId = "warden",
+  requestedActiveDeckCardCounts?: Record<string, number>
+): GameState {
   const map = generateBastionMap(seed);
   const selectedClass = classes.find((c) => c.id === classId) ?? classes[0]!;
-  const baseDeck = buildDeckFromItems(selectedClass.items);
+  const starter = createStarterDeckConfig(selectedClass.id);
+  const deckRules = starter.deckRules;
+  const classLockOverrides = starter.classLockOverrides;
+  const ownedCardCounts = starter.ownedCardCounts;
+  const activeDeckCardCounts = requestedActiveDeckCardCounts ?? starter.activeDeckCardCounts;
+  const baseDeckCandidate = buildDeckFromCounts(activeDeckCardCounts, selectedClass.id, classLockOverrides);
+  const baseDeck = baseDeckCandidate.length >= deckRules.minSize ? baseDeckCandidate : buildStarterDeck(selectedClass.id, selectedClass.items, classLockOverrides);
+  const finalActiveDeckCardCounts = countCards(baseDeck);
+
   const party: Ally[] = Array.from({ length: PARTY_SIZE }, (_, i) => {
     const id = `ally-${i + 1}`;
     const deck = shuffleDeck(baseDeck, seed + i * 13);
     const ally: Ally = {
       id,
       name: `Ally ${i + 1}`,
-      hp: 20,
-      maxHp: 20,
+      hp: 25,
+      maxHp: 25,
       x: map.heroSpawn.x,
       y: map.heroSpawn.y + i,
       statuses: [],
@@ -621,6 +763,11 @@ export function createNewGame(seed = 1, classId = "warden"): GameState {
       rewardOptions: [],
       pendingFloor: null,
       runSummary: null,
+      exhaustionActive: false,
+      deckRules,
+      classLockOverrides,
+      ownedCardCounts,
+      activeDeckCardCounts: finalActiveDeckCardCounts,
       log: [],
     },
     1,
@@ -652,6 +799,11 @@ export function createNewGame(seed = 1, classId = "warden"): GameState {
     rewardOptions: [],
     pendingFloor: null,
     runSummary: null,
+    exhaustionActive: false,
+    deckRules,
+    classLockOverrides,
+    ownedCardCounts,
+    activeDeckCardCounts: finalActiveDeckCardCounts,
     log: ["Battle begins in Bastion.", "Floor objective: defeat enemies or find the treasure chest."],
   };
 }
